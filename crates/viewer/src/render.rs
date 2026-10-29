@@ -12,7 +12,7 @@ pub fn paint(painter: &egui::Painter, rect: Rect, app: &VisualizerApp) {
     let aspect = f64::from(rect.width() / rect.height());
     let rot = Mat4::from_angles(&app.angles);
     let pm = project_mesh(&app.mesh, &rot, &app.projection, &app.camera, aspect);
-    let radius = app.mesh.radius().max(f64::EPSILON);
+    let scale = app.color_scale;
 
     let to_screen = |p: ScreenPoint| {
         Pos2::new(
@@ -24,15 +24,15 @@ pub fn paint(painter: &egui::Painter, rect: Rect, app: &VisualizerApp) {
     if app.render.show_faces && app.render.face_opacity > 0.0 {
         let mut mesh = egui::Mesh::default();
         for t in back_to_front(&app.mesh, &pm) {
-            let tri = app.mesh.triangles[t];
-            let mean_w = tri.iter().map(|&i| pm.vertex_w[i]).sum::<f64>() / 3.0;
-            let color = w_color(mean_w / radius, app.render.face_opacity);
+            // Colour by the whole face's mean w, so a face is one colour.
+            let corners = &app.faces[app.mesh.face_of_triangle[t]];
+            let mean_w =
+                corners.iter().map(|&i| pm.vertex_w[i]).sum::<f64>() / corners.len() as f64;
+            let color = w_color(mean_w / scale, app.render.face_opacity);
             let base = mesh.vertices.len() as u32;
-            for &i in &tri {
-                // back_to_front only returns triangles whose vertices are all Some.
-                if let Some(p) = pm.points[i] {
-                    mesh.colored_vertex(to_screen(p), color);
-                }
+            for &i in &app.mesh.triangles[t] {
+                let p = pm.points[i].expect("back_to_front only returns fully projected faces");
+                mesh.colored_vertex(to_screen(p), color);
             }
             mesh.add_triangle(base, base + 1, base + 2);
         }
@@ -43,7 +43,7 @@ pub fn paint(painter: &egui::Painter, rect: Rect, app: &VisualizerApp) {
         for &(a, b) in &app.edges {
             if let (Some(pa), Some(pb)) = (pm.points[a], pm.points[b]) {
                 let mean_w = (pm.vertex_w[a] + pm.vertex_w[b]) / 2.0;
-                let color = w_color(mean_w / radius, 1.0);
+                let color = w_color(mean_w / scale, 1.0);
                 painter.line_segment([to_screen(pa), to_screen(pb)], Stroke::new(1.6, color));
             }
         }

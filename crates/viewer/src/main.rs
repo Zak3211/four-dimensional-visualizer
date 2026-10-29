@@ -36,8 +36,14 @@ fn apply_args(app: &mut VisualizerApp, args: impl Iterator<Item = String>) -> Re
                 .ok_or_else(|| format!("{flag} needs a value\n{usage}"))
         };
         match flag.as_str() {
-            "--angles" => app.angles = parse_six(&value()?)?,
-            "--spin" => app.spin = parse_six(&value()?)?,
+            "--angles" => app.angles = parse_six(&value()?)?.map(app::wrap_angle),
+            "--spin" => {
+                let spin = parse_six(&value()?)?;
+                if spin.iter().any(|s| s.abs() > app::MAX_SPIN) {
+                    return Err(format!("--spin rates must be within ±{}", app::MAX_SPIN));
+                }
+                app.spin = spin;
+            }
             "--eye" => {
                 let w: f64 = value()?.parse().map_err(|e| format!("--eye: {e}"))?;
                 let range = app.eye_range();
@@ -59,7 +65,11 @@ fn apply_args(app: &mut VisualizerApp, args: impl Iterator<Item = String>) -> Re
 fn parse_six(s: &str) -> Result<[f64; 6], String> {
     let v: Vec<f64> = s
         .split(',')
-        .map(|x| x.trim().parse::<f64>().map_err(|e| format!("{x:?}: {e}")))
+        .map(|x| match x.trim().parse::<f64>() {
+            Ok(v) if v.is_finite() => Ok(v),
+            Ok(_) => Err(format!("{x:?}: must be a finite number")),
+            Err(e) => Err(format!("{x:?}: {e}")),
+        })
         .collect::<Result<_, _>>()?;
     v.try_into()
         .map_err(|v: Vec<f64>| format!("expected 6 comma-separated numbers, got {}", v.len()))
@@ -94,5 +104,15 @@ mod tests {
         assert!(apply_args(&mut app, args("--eye 1.5")).is_err()); // below 1.1 * radius
         assert!(apply_args(&mut app, args("--spin")).is_err());
         assert!(apply_args(&mut app, args("--bogus")).is_err());
+        assert!(apply_args(&mut app, args("--angles nan,0,0,0,0,0")).is_err());
+        assert!(apply_args(&mut app, args("--spin 0,0,inf,0,0,0")).is_err());
+        assert!(apply_args(&mut app, args("--spin 0,0,5,0,0,0")).is_err());
+    }
+
+    #[test]
+    fn out_of_range_angles_are_wrapped() {
+        let mut app = VisualizerApp::new(geom4::tesseract());
+        apply_args(&mut app, args("--angles 0,0,4,0,0,0")).unwrap();
+        assert!((app.angles[2] - (4.0 - std::f64::consts::TAU)).abs() < 1e-12);
     }
 }

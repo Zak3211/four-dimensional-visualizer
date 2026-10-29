@@ -27,15 +27,18 @@ crates/geom4/src/     pure maths, f64, NO external dependencies (keep it that wa
   vec.rs              Vec3, Vec4: Add/Sub/Neg/Mul<f64>, dot, norm, to/from_array
   rotation.rs         Plane (6, Plane::ALL order), Mat4: identity, rotation, from_angles,
                       Mul<Mat4> (composition) and Mul<Vec4> (apply)
-  projection.rs       Projection4 { Perspective { eye_w }, Orthographic }::project -> Option<Vec3>
+  projection.rs       Projection4 { Perspective { eye_w }, Orthographic }::project -> Option<Vec3>,
+                      max_extent(radius) (bound on |projected point|)
   camera.rs           OrbitCamera { yaw, pitch, distance, fov_y }::project -> Option<ScreenPoint>
-  mesh.rs             Mesh4 { vertices, triangles, face_of_triangle }: face_count, feature_edges, radius
+  mesh.rs             Mesh4 { vertices, triangles, face_of_triangle }: face_count, feature_edges,
+                      face_vertices, radius
   shapes.rs           tesseract()
   pipeline.rs         ProjectedMesh { points, vertex_w }, project_mesh, back_to_front
 crates/viewer/src/    eframe 0.37 app (eframe is the only external dependency)
   main.rs             window setup and CLI flags (apply_args, parse_six)
-  app.rs              VisualizerApp, RenderOptions, control panel, camera input
-  render.rs           paint(): faces furthest first, coloured by mean w, then edges
+  app.rs              VisualizerApp (+ cached edges, faces, color_scale), RenderOptions,
+                      control panel, camera input, min_camera_distance, wrap_angle
+  render.rs           paint(): faces furthest first, each coloured by its face's mean w, then edges
 ```
 
 Pipeline: 4D vertex → `Mat4` → `Projection4` → `OrbitCamera` → egui painter.
@@ -45,6 +48,9 @@ Pipeline: 4D vertex → `Mat4` → `Projection4` → `OrbitCamera` → egui pain
 - `Mat4` acts on column vectors. `from_angles` applies XY first and ZW last: `R = R_ZW ⋯ R_XY`. `rotation(plane, θ)` turns the plane's first axis towards its second.
 - `feature_edges`: an edge is a triangulation diagonal if some face uses it in two triangles. An edge is real if some face uses it in exactly one. This does not depend on how many faces meet at an edge.
 - Eye distance: rotations preserve norms, so `|w| ≤ mesh.radius()`. The eye-w slider is bounded to `[1.1 r, 5 r]` (`VisualizerApp::eye_range`) and defaults to `2r`. Never hardcode it per shape.
+- Painter's order is per **face**: `back_to_front` returns triangles sorted by their face's mean corner depth, with a face's triangles adjacent. Colour is per face too. Sorting or colouring per triangle makes the triangulation diagonals visible.
+- The colour scale is the largest face-centre norm (`color_scale`, √2 for the tesseract), not the vertex radius, so the blue-to-orange range is actually used.
+- Camera floor: the 4D perspective can project points out to `r·e/√(e²−r²)` (`Projection4::max_extent`), which is 4.8 at e = 2.2 and r = 2. `min_camera_distance()` is 1.25× that, enforced every frame, so the camera never ends up inside the shape.
 - `ScreenPoint` x and y are in `[-1, 1]` with y up. `render::paint` flips y for egui.
 - Tesseract vertex `i`: coordinate `k` is +1 if bit `k` of `i` is set (x = bit 0, …, w = bit 3).
 
@@ -83,4 +89,8 @@ Roughly in priority order:
    - Keyboard shortcuts (space for pause, R for reset).
    - Colour by cell instead of by w, as an option.
    - Only recompute the projection when the state has changed (cheap today, so do it only if it shows up in a profile).
-   - A `Mesh4::validate()` that checks indices, contiguous face ids and degenerate triangles, for user-supplied shapes.
+   - A `Mesh4::validate()` that checks indices, contiguous face ids, matching `triangles` and `face_of_triangle` lengths, and degenerate triangles, for user-supplied shapes.
+   - Store the eye distance separately from `Projection4`, so toggling to orthographic and back keeps the slider value.
+   - Property tests over a few hundred fixed-seed random rotations (a hand-rolled LCG, with no new dependencies).
+   - Near-plane clipping of triangles and edges in `pipeline` instead of dropping them whole. This would allow a closer camera and an eye inside the shape.
+   - A `Projection4::perspective(eye_w)` constructor that rejects `eye_w <= 0`. Today it is only a `debug_assert`.

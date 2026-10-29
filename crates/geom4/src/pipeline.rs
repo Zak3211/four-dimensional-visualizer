@@ -34,23 +34,33 @@ pub fn project_mesh(
     ProjectedMesh { points, vertex_w }
 }
 
-/// Triangle indices ordered furthest first by mean vertex depth (painter's
-/// algorithm). Triangles with any `None` vertex are left out.
+/// Triangle indices for the painter's algorithm: faces ordered furthest first
+/// by the mean depth of their distinct corners, with each face's triangles
+/// kept together so a face is never split by another. Faces with any `None`
+/// corner are left out whole.
 pub fn back_to_front(mesh: &Mesh4, pm: &ProjectedMesh) -> Vec<usize> {
-    let mut keyed: Vec<(f64, usize)> = mesh
-        .triangles
+    let faces = mesh.face_vertices();
+    let mut face_depth: Vec<Option<f64>> = faces
         .iter()
-        .enumerate()
-        .filter_map(|(t, tri)| {
-            let depth_sum = tri
+        .map(|corners| {
+            let sum = corners
                 .iter()
                 .map(|&i| pm.points[i].map(|p| p.depth))
                 .sum::<Option<f64>>()?;
-            Some((depth_sum / 3.0, t))
+            Some(sum / corners.len() as f64)
         })
         .collect();
-    keyed.sort_by(|a, b| b.0.total_cmp(&a.0));
-    keyed.into_iter().map(|(_, t)| t).collect()
+    face_depth.resize(mesh.face_count(), None);
+
+    let mut keyed: Vec<(f64, usize, usize)> = mesh
+        .face_of_triangle
+        .iter()
+        .enumerate()
+        .filter_map(|(t, &f)| face_depth[f].map(|d| (d, f, t)))
+        .collect();
+    // Furthest face first; ties broken by face id so a face's triangles stay adjacent.
+    keyed.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
+    keyed.into_iter().map(|(_, _, t)| t).collect()
 }
 
 #[cfg(test)]
@@ -73,7 +83,7 @@ mod tests {
             eye_w: 1.1 * m.radius(),
         };
         let cam = OrbitCamera::default();
-        // Includes rotations that push a vertex right up to w = radius.
+        // Generic rotations; the exact w = radius case has its own test.
         let mut rots = rotations();
         for a in [0.5, 1.0, 1.5] {
             rots.push(Mat4::from_angles(&[0.0, 0.0, a, 0.0, a, a]));
@@ -86,8 +96,9 @@ mod tests {
     }
 
     #[test]
-    fn back_to_front_orders_furthest_first() {
+    fn back_to_front_orders_faces_furthest_first_and_keeps_them_whole() {
         let m = tesseract();
+        let faces = m.face_vertices();
         for rot in rotations() {
             let pm = project_mesh(
                 &m,
@@ -96,19 +107,38 @@ mod tests {
                 &OrbitCamera::default(),
                 1.0,
             );
-            let mean_depth = |t: usize| {
-                m.triangles[t]
-                    .iter()
-                    .map(|&i| pm.points[i].unwrap().depth)
-                    .sum::<f64>()
-                    / 3.0
+            let face_depth = |t: usize| {
+                let c = &faces[m.face_of_triangle[t]];
+                c.iter().map(|&i| pm.points[i].unwrap().depth).sum::<f64>() / c.len() as f64
             };
             let order = back_to_front(&m, &pm);
             assert_eq!(order.len(), 48);
             assert!(order
                 .windows(2)
-                .all(|w| mean_depth(w[0]) >= mean_depth(w[1])));
+                .all(|w| face_depth(w[0]) >= face_depth(w[1])));
+            // A face's two triangles are adjacent in the order.
+            for pair in order.chunks(2) {
+                assert_eq!(m.face_of_triangle[pair[0]], m.face_of_triangle[pair[1]]);
+            }
         }
+    }
+
+    #[test]
+    fn vertex_exactly_at_w_equal_radius_still_projects() {
+        let m = tesseract();
+        // Orthonormal rows; the last sends (1, 1, 1, 1) to w = 2 = radius.
+        let rot = Mat4([
+            [0.5, -0.5, 0.5, -0.5],
+            [0.5, 0.5, -0.5, -0.5],
+            [0.5, -0.5, -0.5, 0.5],
+            [0.5, 0.5, 0.5, 0.5],
+        ]);
+        let proj = Projection4::Perspective {
+            eye_w: 1.1 * m.radius(),
+        };
+        let pm = project_mesh(&m, &rot, &proj, &OrbitCamera::default(), 1.0);
+        assert!(pm.vertex_w.iter().any(|&w| (w - m.radius()).abs() < 1e-12));
+        assert!(pm.points.iter().all(Option::is_some));
     }
 
     #[test]

@@ -1,7 +1,7 @@
 //! App state and the control panel.
 
 use eframe::egui;
-use geom4::{Mesh4, OrbitCamera, Plane, Projection4};
+use geom4::{Mesh4, OrbitCamera, Plane, Projection4, Vec4};
 use std::f64::consts::PI;
 
 /// What gets drawn and how.
@@ -27,6 +27,11 @@ pub struct VisualizerApp {
     pub mesh: Mesh4,
     /// Cached `mesh.feature_edges()`.
     pub edges: Vec<(usize, usize)>,
+    /// Cached `mesh.face_vertices()`, for per-face colour.
+    pub faces: Vec<Vec<usize>>,
+    /// Largest face-centre norm: the most a face's mean w can reach under any
+    /// rotation. Colours are scaled by it so the full range is used.
+    pub color_scale: f64,
     /// Slider angles in radians, one per `Plane::ALL` entry, kept in `[-π, π)`.
     pub angles: [f64; 6],
     /// Auto-spin rates in rad/s, one per plane.
@@ -38,7 +43,7 @@ pub struct VisualizerApp {
 
 /// Default spin: a slow turn through w so the inner and outer cubes swap.
 pub const DEFAULT_SPIN: [f64; 6] = [0.0, 0.0, 0.35, 0.0, 0.2, 0.0];
-const MAX_SPIN: f64 = 2.0;
+pub const MAX_SPIN: f64 = 2.0;
 const MIN_PITCH: f64 = -1.5;
 const MAX_PITCH: f64 = 1.5;
 const MIN_DISTANCE: f64 = 3.0;
@@ -47,9 +52,22 @@ const MAX_DISTANCE: f64 = 40.0;
 impl VisualizerApp {
     pub fn new(mesh: Mesh4) -> Self {
         let edges = mesh.feature_edges();
+        let faces = mesh.face_vertices();
+        let color_scale = faces
+            .iter()
+            .map(|c| {
+                let sum = c
+                    .iter()
+                    .fold(Vec4::default(), |acc, &i| acc + mesh.vertices[i]);
+                (sum * (1.0 / c.len() as f64)).norm()
+            })
+            .fold(0.0, f64::max)
+            .max(f64::EPSILON);
         let mut app = Self {
             mesh,
             edges,
+            faces,
+            color_scale,
             angles: [0.0; 6],
             spin: DEFAULT_SPIN,
             projection: Projection4::Orthographic,
@@ -69,6 +87,13 @@ impl VisualizerApp {
 
     pub fn default_eye_w(&self) -> f64 {
         2.0 * self.mesh.radius().max(f64::EPSILON)
+    }
+
+    /// Closest the camera may get: outside everything the current 4D
+    /// projection can produce, so no vertex ends up behind the camera.
+    pub fn min_camera_distance(&self) -> f64 {
+        let extent = self.projection.max_extent(self.mesh.radius());
+        (1.25 * extent).clamp(MIN_DISTANCE, MAX_DISTANCE)
     }
 
     /// Back to the start-up view.
@@ -175,21 +200,27 @@ impl VisualizerApp {
             let scroll = f64::from(ui.input(|i| i.smooth_scroll_delta().y));
             if scroll != 0.0 {
                 self.camera.distance = (self.camera.distance * (-0.002 * scroll).exp())
-                    .clamp(MIN_DISTANCE, MAX_DISTANCE);
+                    .clamp(self.min_camera_distance(), MAX_DISTANCE);
             }
         }
     }
 }
 
 /// Wraps an angle into `[-π, π)`.
-fn wrap_angle(a: f64) -> f64 {
-    (a + PI).rem_euclid(2.0 * PI) - PI
+pub fn wrap_angle(a: f64) -> f64 {
+    if (-PI..PI).contains(&a) {
+        a // exact: no rounding for values already in range
+    } else {
+        (a + PI).rem_euclid(2.0 * PI) - PI
+    }
 }
 
 impl eframe::App for VisualizerApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let dt = f64::from(ui.input(|i| i.stable_dt)).min(0.1);
         self.advance(dt);
+        // The eye slider can move the projected shape out past the camera.
+        self.camera.distance = self.camera.distance.max(self.min_camera_distance());
 
         egui::Panel::left("controls")
             .resizable(false)
@@ -238,6 +269,26 @@ mod tests {
                 eye_w: app.default_eye_w()
             }
         );
+    }
+
+    #[test]
+    fn camera_stays_outside_the_projected_shape() {
+        let mut app = VisualizerApp::new(geom4::tesseract());
+        for eye in [
+            *app.eye_range().start(),
+            app.default_eye_w(),
+            *app.eye_range().end(),
+        ] {
+            app.projection = Projection4::Perspective { eye_w: eye };
+            let extent = app.projection.max_extent(app.mesh.radius());
+            assert!(app.min_camera_distance() > extent, "eye {eye}");
+        }
+    }
+
+    #[test]
+    fn color_scale_is_the_face_centre_radius() {
+        let app = VisualizerApp::new(geom4::tesseract());
+        assert!((app.color_scale - 2f64.sqrt()).abs() < 1e-12);
     }
 
     #[test]

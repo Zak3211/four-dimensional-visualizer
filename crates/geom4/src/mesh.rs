@@ -43,6 +43,19 @@ impl Mesh4 {
             .collect()
     }
 
+    /// Each face's distinct vertex indices, sorted, indexed by face id.
+    pub fn face_vertices(&self) -> Vec<Vec<usize>> {
+        let mut faces = vec![Vec::new(); self.face_count()];
+        for (tri, &f) in self.triangles.iter().zip(&self.face_of_triangle) {
+            faces[f].extend_from_slice(tri);
+        }
+        for f in &mut faces {
+            f.sort_unstable();
+            f.dedup();
+        }
+        faces
+    }
+
     /// Largest vertex distance from the origin. Rotations preserve norms, so
     /// no rotated vertex can have `|w| > radius()`.
     pub fn radius(&self) -> f64 {
@@ -79,6 +92,11 @@ mod tests {
         let mut m = square();
         m.face_of_triangle = vec![0, 1]; // two triangles, not one square
         assert_eq!(m.feature_edges().len(), 5);
+    }
+
+    #[test]
+    fn face_vertices_are_distinct_corners() {
+        assert_eq!(square().face_vertices(), vec![vec![0, 1, 2, 3]]);
     }
 
     #[test]
