@@ -1,0 +1,8 @@
+[package]
+name = "geom4"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "4D geometry: rotations, projections and meshes. No dependencies."
+
+[dependencies]

@@ -1,0 +1,7 @@
+[workspace]
+resolver = "2"
+members = ["crates/geom4", "crates/viewer"]
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
