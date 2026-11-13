@@ -1,7 +1,7 @@
 //! App state and the control panel.
 
 use eframe::egui;
-use geom4::{Mesh4, OrbitCamera, Plane, Projection4, Vec4};
+use geom4::{Edge, Mesh4, OrbitCamera, Plane, Projection4};
 use std::f64::consts::PI;
 
 /// What gets drawn and how.
@@ -25,10 +25,8 @@ impl Default for RenderOptions {
 
 pub struct VisualizerApp {
     pub mesh: Mesh4,
-    /// Cached `mesh.feature_edges()`.
-    pub edges: Vec<(usize, usize)>,
-    /// Cached `mesh.face_vertices()`, for per-face colour.
-    pub faces: Vec<Vec<usize>>,
+    /// Cached `mesh.edges()`.
+    pub edges: Vec<Edge>,
     /// Largest face-centre norm: the most a face's mean w can reach under any
     /// rotation. Colours are scaled by it so the full range is used.
     pub color_scale: f64,
@@ -51,22 +49,15 @@ const MAX_DISTANCE: f64 = 40.0;
 
 impl VisualizerApp {
     pub fn new(mesh: Mesh4) -> Self {
-        let edges = mesh.feature_edges();
-        let faces = mesh.face_vertices();
-        let color_scale = faces
-            .iter()
-            .map(|c| {
-                let sum = c
-                    .iter()
-                    .fold(Vec4::default(), |acc, &i| acc + mesh.vertices[i]);
-                (sum * (1.0 / c.len() as f64)).norm()
-            })
+        let edges = mesh.edges();
+        let color_scale = mesh
+            .face_ids()
+            .map(|f| mesh.face_centre(f).norm())
             .fold(0.0, f64::max)
             .max(f64::EPSILON);
         let mut app = Self {
             mesh,
             edges,
-            faces,
             color_scale,
             angles: [0.0; 6],
             spin: DEFAULT_SPIN,

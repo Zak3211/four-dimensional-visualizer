@@ -13,7 +13,7 @@ pub mod shapes;
 pub mod vec;
 
 pub use camera::{OrbitCamera, ScreenPoint};
-pub use mesh::Mesh4;
+pub use mesh::{Edge, FaceId, Mesh4, MeshError, Polygon, Triangle, VertexId};
 pub use pipeline::{back_to_front, project_mesh, ProjectedMesh};
 pub use projection::Projection4;
 pub use rotation::{Mat4, Plane};

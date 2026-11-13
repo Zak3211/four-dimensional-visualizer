@@ -22,27 +22,34 @@ pub fn paint(painter: &egui::Painter, rect: Rect, app: &VisualizerApp) {
     };
 
     if app.render.show_faces && app.render.face_opacity > 0.0 {
+        // One un-antialiased mesh: polygon fills with feathering spike on
+        // near-edge-on faces and produce NaNs for faces seen exactly edge-on.
         let mut mesh = egui::Mesh::default();
-        for t in back_to_front(&app.mesh, &pm) {
+        for f in back_to_front(&app.mesh, &pm) {
+            let face = app.mesh.face(f);
+            let corners = face.corners();
             // Colour by the whole face's mean w, so a face is one colour.
-            let corners = &app.faces[app.mesh.face_of_triangle[t]];
-            let mean_w =
-                corners.iter().map(|&i| pm.vertex_w[i]).sum::<f64>() / corners.len() as f64;
+            let mean_w = corners.iter().map(|&v| pm.w(v)).sum::<f64>() / corners.len() as f64;
             let color = w_color(mean_w / scale, app.render.face_opacity);
-            let base = mesh.vertices.len() as u32;
-            for &i in &app.mesh.triangles[t] {
-                let p = pm.points[i].expect("back_to_front only returns fully projected faces");
-                mesh.colored_vertex(to_screen(p), color);
+            for t in face.triangles() {
+                let base = mesh.vertices.len() as u32;
+                for &v in &t.0 {
+                    let p = pm
+                        .point(v)
+                        .expect("back_to_front only returns fully projected faces");
+                    mesh.colored_vertex(to_screen(p), color);
+                }
+                mesh.add_triangle(base, base + 1, base + 2);
             }
-            mesh.add_triangle(base, base + 1, base + 2);
         }
         painter.add(egui::Shape::mesh(mesh));
     }
 
     if app.render.show_edges {
-        for &(a, b) in &app.edges {
-            if let (Some(pa), Some(pb)) = (pm.points[a], pm.points[b]) {
-                let mean_w = (pm.vertex_w[a] + pm.vertex_w[b]) / 2.0;
+        for e in &app.edges {
+            let (a, b) = e.ends();
+            if let (Some(pa), Some(pb)) = (pm.point(a), pm.point(b)) {
+                let mean_w = (pm.w(a) + pm.w(b)) / 2.0;
                 let color = w_color(mean_w / scale, 1.0);
                 painter.line_segment([to_screen(pa), to_screen(pb)], Stroke::new(1.6, color));
             }

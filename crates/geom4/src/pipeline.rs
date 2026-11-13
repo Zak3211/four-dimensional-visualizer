@@ -1,17 +1,27 @@
 //! The full pipeline: rotate in 4D, project to 3D, project to the screen.
 
 use crate::camera::{OrbitCamera, ScreenPoint};
-use crate::mesh::Mesh4;
+use crate::mesh::{FaceId, Mesh4, VertexId};
 use crate::projection::Projection4;
 use crate::rotation::Mat4;
 
-/// A mesh's vertices after the whole pipeline, indexed like `Mesh4::vertices`.
+/// A mesh's vertices after the whole pipeline, indexed by [`VertexId`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProjectedMesh {
-    /// `None` when the vertex is behind the 4D eye or the camera.
-    pub points: Vec<Option<ScreenPoint>>,
-    /// Each vertex's w after rotation, before projection (used for colour).
-    pub vertex_w: Vec<f64>,
+    points: Vec<Option<ScreenPoint>>,
+    vertex_w: Vec<f64>,
+}
+
+impl ProjectedMesh {
+    /// The vertex on screen, or `None` when it is behind the 4D eye or the camera.
+    pub fn point(&self, id: VertexId) -> Option<ScreenPoint> {
+        self.points[id.0]
+    }
+
+    /// The vertex's w after rotation, before projection (used for colour).
+    pub fn w(&self, id: VertexId) -> f64 {
+        self.vertex_w[id.0]
+    }
 }
 
 /// Runs every vertex of `mesh` through rotation, 4D→3D and 3D→2D projection.
@@ -23,7 +33,7 @@ pub fn project_mesh(
     aspect: f64,
 ) -> ProjectedMesh {
     let (points, vertex_w) = mesh
-        .vertices
+        .vertices()
         .iter()
         .map(|&v| {
             let r = *rot * v;
@@ -34,33 +44,23 @@ pub fn project_mesh(
     ProjectedMesh { points, vertex_w }
 }
 
-/// Triangle indices for the painter's algorithm: faces ordered furthest first
-/// by the mean depth of their distinct corners, with each face's triangles
-/// kept together so a face is never split by another. Faces with any `None`
-/// corner are left out whole.
-pub fn back_to_front(mesh: &Mesh4, pm: &ProjectedMesh) -> Vec<usize> {
-    let faces = mesh.face_vertices();
-    let mut face_depth: Vec<Option<f64>> = faces
-        .iter()
-        .map(|corners| {
+/// Faces for the painter's algorithm, furthest first by the mean depth of
+/// their corners. Faces with any corner off screen (`None`) are left out.
+pub fn back_to_front(mesh: &Mesh4, pm: &ProjectedMesh) -> Vec<FaceId> {
+    let mut keyed: Vec<(f64, FaceId)> = mesh
+        .face_ids()
+        .filter_map(|f| {
+            let corners = mesh.face(f).corners();
             let sum = corners
                 .iter()
-                .map(|&i| pm.points[i].map(|p| p.depth))
+                .map(|&v| pm.point(v).map(|p| p.depth))
                 .sum::<Option<f64>>()?;
-            Some(sum / corners.len() as f64)
+            Some((sum / corners.len() as f64, f))
         })
         .collect();
-    face_depth.resize(mesh.face_count(), None);
-
-    let mut keyed: Vec<(f64, usize, usize)> = mesh
-        .face_of_triangle
-        .iter()
-        .enumerate()
-        .filter_map(|(t, &f)| face_depth[f].map(|d| (d, f, t)))
-        .collect();
-    // Furthest face first; ties broken by face id so a face's triangles stay adjacent.
+    // Furthest first; ties broken by face id so the order is deterministic.
     keyed.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
-    keyed.into_iter().map(|(_, _, t)| t).collect()
+    keyed.into_iter().map(|(_, f)| f).collect()
 }
 
 #[cfg(test)]
@@ -91,14 +91,13 @@ mod tests {
         for rot in &rots {
             let pm = project_mesh(&m, rot, &proj, &cam, 1.5);
             assert!(pm.points.iter().all(Option::is_some));
-            assert_eq!(back_to_front(&m, &pm).len(), m.triangles.len());
+            assert_eq!(back_to_front(&m, &pm).len(), m.faces().len());
         }
     }
 
     #[test]
-    fn back_to_front_orders_faces_furthest_first_and_keeps_them_whole() {
+    fn back_to_front_orders_faces_furthest_first() {
         let m = tesseract();
-        let faces = m.face_vertices();
         for rot in rotations() {
             let pm = project_mesh(
                 &m,
@@ -107,19 +106,15 @@ mod tests {
                 &OrbitCamera::default(),
                 1.0,
             );
-            let face_depth = |t: usize| {
-                let c = &faces[m.face_of_triangle[t]];
-                c.iter().map(|&i| pm.points[i].unwrap().depth).sum::<f64>() / c.len() as f64
+            let face_depth = |f: FaceId| {
+                let c = m.face(f).corners();
+                c.iter().map(|&v| pm.point(v).unwrap().depth).sum::<f64>() / c.len() as f64
             };
             let order = back_to_front(&m, &pm);
-            assert_eq!(order.len(), 48);
+            assert_eq!(order.len(), 24);
             assert!(order
                 .windows(2)
                 .all(|w| face_depth(w[0]) >= face_depth(w[1])));
-            // A face's two triangles are adjacent in the order.
-            for pair in order.chunks(2) {
-                assert_eq!(m.face_of_triangle[pair[0]], m.face_of_triangle[pair[1]]);
-            }
         }
     }
 
@@ -142,7 +137,7 @@ mod tests {
     }
 
     #[test]
-    fn triangles_with_a_hidden_vertex_are_skipped() {
+    fn faces_with_a_hidden_vertex_are_skipped() {
         let m = tesseract();
         // Eye at w = 0.5: the eight vertices with w = +1 are behind it.
         let proj = Projection4::Perspective { eye_w: 0.5 };
@@ -150,9 +145,9 @@ mod tests {
         assert_eq!(pm.points.iter().filter(|p| p.is_none()).count(), 8);
         let order = back_to_front(&m, &pm);
         // Only the 6 squares of the w = -1 cube survive.
-        assert_eq!(order.len(), 12);
-        for t in order {
-            assert!(m.triangles[t].iter().all(|&i| pm.points[i].is_some()));
+        assert_eq!(order.len(), 6);
+        for f in order {
+            assert!(m.face(f).corners().iter().all(|&v| pm.point(v).is_some()));
         }
     }
 
@@ -167,7 +162,7 @@ mod tests {
             &OrbitCamera::default(),
             1.0,
         );
-        for (v, w) in m.vertices.iter().zip(&pm.vertex_w) {
+        for (v, w) in m.vertices().iter().zip(&pm.vertex_w) {
             assert_eq!(*w, (rot * *v).w);
         }
     }

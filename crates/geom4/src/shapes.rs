@@ -1,9 +1,9 @@
 //! Concrete 4D shapes.
 
-use crate::mesh::Mesh4;
+use crate::mesh::{Mesh4, VertexId};
 use crate::vec::Vec4;
 
-/// The tesseract `[-1, 1]^4`: 16 vertices, 24 square faces, 48 triangles.
+/// The tesseract `[-1, 1]^4`: 16 vertices, 24 square faces (48 triangles).
 ///
 /// Vertex `i` has coordinate `k` equal to `+1` when bit `k` of `i` is set,
 /// else `-1` (x = bit 0 … w = bit 3).
@@ -15,9 +15,7 @@ pub fn tesseract() -> Mesh4 {
         })
         .collect();
 
-    let mut triangles = Vec::with_capacity(48);
-    let mut face_of_triangle = Vec::with_capacity(48);
-    let mut face = 0;
+    let mut faces = Vec::with_capacity(24);
     // A square face frees two axes (a, b) and fixes the other two.
     for a in 0..4 {
         for b in a + 1..4 {
@@ -25,49 +23,38 @@ pub fn tesseract() -> Mesh4 {
             for bits in 0..4usize {
                 let base = (bits & 1) << fixed[0] | (bits >> 1 & 1) << fixed[1];
                 // Corners in cyclic order around the square.
-                let v00 = base;
-                let v10 = base | 1 << a;
-                let v11 = base | 1 << a | 1 << b;
-                let v01 = base | 1 << b;
-                triangles.push([v00, v10, v11]);
-                triangles.push([v00, v11, v01]);
-                face_of_triangle.extend([face, face]);
-                face += 1;
+                let corners = [base, base | 1 << a, base | 1 << a | 1 << b, base | 1 << b];
+                faces.push(corners.map(VertexId).to_vec());
             }
         }
     }
 
-    Mesh4 {
-        vertices,
-        triangles,
-        face_of_triangle,
-    }
+    Mesh4::from_polygons(vertices, faces).expect("tesseract faces are valid")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mesh::Edge;
     use std::collections::{BTreeMap, BTreeSet};
 
     const EPS: f64 = 1e-12;
 
-    fn face_vertices(m: &Mesh4) -> Vec<BTreeSet<usize>> {
-        let mut faces = vec![BTreeSet::new(); m.face_count()];
-        for (tri, &f) in m.triangles.iter().zip(&m.face_of_triangle) {
-            faces[f].extend(tri.iter().copied());
-        }
-        faces
+    fn face_vertices(m: &Mesh4) -> Vec<BTreeSet<VertexId>> {
+        m.faces()
+            .iter()
+            .map(|p| p.corners().iter().copied().collect())
+            .collect()
     }
 
     #[test]
     fn counts() {
         let m = tesseract();
-        assert_eq!(m.vertices.len(), 16);
-        assert_eq!(m.triangles.len(), 48);
-        assert_eq!(m.face_of_triangle.len(), 48);
-        assert_eq!(m.face_count(), 24);
+        assert_eq!(m.vertices().len(), 16);
+        assert_eq!(m.triangles().count(), 48);
+        assert_eq!(m.faces().len(), 24);
         assert!((m.radius() - 2.0).abs() < EPS);
-        let distinct: BTreeSet<_> = m.vertices.iter().map(|v| format!("{v:?}")).collect();
+        let distinct: BTreeSet<_> = m.vertices().iter().map(|v| format!("{v:?}")).collect();
         assert_eq!(distinct.len(), 16);
     }
 
@@ -75,7 +62,7 @@ mod tests {
     fn every_face_is_a_flat_square_of_side_two() {
         let m = tesseract();
         for verts in face_vertices(&m) {
-            let pts: Vec<Vec4> = verts.iter().map(|&i| m.vertices[i]).collect();
+            let pts: Vec<Vec4> = verts.iter().map(|&i| m.vertex(i)).collect();
             assert_eq!(pts.len(), 4);
             // Flat: exactly two coordinates are constant across the face.
             let constant = (0..4)
@@ -100,28 +87,43 @@ mod tests {
     }
 
     #[test]
-    fn feature_edges_are_the_32_unit_cube_edges() {
+    fn corners_are_in_cyclic_order() {
+        // Adjacent corners (including last to first) are joined by a side of length 2.
         let m = tesseract();
-        let edges = m.feature_edges();
+        for p in m.faces() {
+            let c = p.corners();
+            for i in 0..c.len() {
+                let side = m.vertex(c[i]) - m.vertex(c[(i + 1) % c.len()]);
+                assert!((side.norm() - 2.0).abs() < EPS);
+            }
+        }
+    }
+
+    #[test]
+    fn edges_are_the_32_cube_edges() {
+        let m = tesseract();
+        let edges = m.edges();
         assert_eq!(edges.len(), 32);
 
         let mut degree = [0; 16];
-        for &(a, b) in &edges {
-            assert!(((m.vertices[a] - m.vertices[b]).norm() - 2.0).abs() < EPS);
-            degree[a] += 1;
-            degree[b] += 1;
+        for e in &edges {
+            let (a, b) = e.ends();
+            assert!(((m.vertex(a) - m.vertex(b)).norm() - 2.0).abs() < EPS);
+            degree[a.0] += 1;
+            degree[b.0] += 1;
         }
         assert!(degree.iter().all(|&d| d == 4));
 
         // Every edge lies in exactly three square faces.
         let faces = face_vertices(&m);
-        let mut faces_per_edge: BTreeMap<(usize, usize), usize> = BTreeMap::new();
-        for &(a, b) in &edges {
+        let mut faces_per_edge: BTreeMap<Edge, usize> = BTreeMap::new();
+        for &e in &edges {
+            let (a, b) = e.ends();
             let n = faces
                 .iter()
                 .filter(|f| f.contains(&a) && f.contains(&b))
                 .count();
-            faces_per_edge.insert((a, b), n);
+            faces_per_edge.insert(e, n);
         }
         assert!(faces_per_edge.values().all(|&n| n == 3));
     }
